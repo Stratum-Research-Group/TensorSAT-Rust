@@ -16,59 +16,96 @@ impl CNFFormula {
         Self { n_vars, clauses }
     }
 
-    /// Parse DIMACS CNF format string.
-    pub fn from_dimacs(dimacs: &str) -> Result<Self, String> {
+    /// Parse DIMACS CNF format string with optional strict validation.
+    pub fn from_dimacs_with_options(dimacs: &str, strict: bool) -> Result<Self, String> {
         let mut clauses = Vec::new();
         let mut n_vars = 0;
+        let mut n_clauses_decl = None;
+        let mut has_header = false;
+        let mut current_clause = Vec::new();
 
-        for line in dimacs.lines() {
+        for (line_idx, line) in dimacs.lines().enumerate() {
+            let line_num = line_idx + 1;
             let line = line.trim();
             if line.is_empty() || line.starts_with('c') {
                 continue;
             }
             if line.starts_with("p cnf") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if parts.len() >= 3 {
-                    n_vars = parts[2].parse::<usize>().map_err(|e| e.to_string())?;
+                if has_header && strict {
+                    return Err(format!("Duplicate 'p cnf' header at line {}", line_num));
                 }
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 4 {
+                    if strict {
+                        return Err(format!("Malformed header at line {}: expected 4 tokens", line_num));
+                    }
+                    if parts.len() >= 3 {
+                        n_vars = parts[2].parse::<usize>().map_err(|e| e.to_string())?;
+                    }
+                } else {
+                    n_vars = parts[2].parse::<usize>().map_err(|e| e.to_string())?;
+                    n_clauses_decl = Some(parts[3].parse::<usize>().map_err(|e| e.to_string())?);
+                }
+                has_header = true;
                 continue;
             }
 
-            let mut current_clause = Vec::new();
             for part in line.split_whitespace() {
-                if let Ok(lit) = part.parse::<i32>() {
-                    if lit == 0 {
-                        if !current_clause.is_empty() {
-                            clauses.push(current_clause);
-                            current_clause = Vec::new();
-                        }
-                    } else {
-                        current_clause.push(lit);
+                let lit = part.parse::<i32>().map_err(|_| format!("Invalid literal '{}' at line {}", part, line_num))?;
+                if lit == 0 {
+                    clauses.push(current_clause);
+                    current_clause = Vec::new();
+                } else {
+                    let var = lit.unsigned_abs() as usize;
+                    if strict && n_vars > 0 && (var < 1 || var > n_vars) {
+                        return Err(format!("Variable {} out of declared bounds [1, {}] at line {}", var, n_vars, line_num));
                     }
+                    current_clause.push(lit);
                 }
             }
-            if !current_clause.is_empty() {
-                clauses.push(current_clause);
+        }
+
+        if !current_clause.is_empty() {
+            if strict {
+                return Err("Unterminated trailing clause: missing final 0 delimiter".to_string());
+            }
+            clauses.push(current_clause);
+        }
+
+        if strict {
+            if let Some(decl) = n_clauses_decl {
+                if clauses.len() != decl {
+                    return Err(format!("Clause count mismatch: declared {}, but parsed {}", decl, clauses.len()));
+                }
             }
         }
 
         Ok(Self { n_vars, clauses })
     }
 
-    /// Builds the primal variable interaction graph (edges between variables
+    /// Parse DIMACS CNF format string (non-strict mode for backward compatibility).
+    pub fn from_dimacs(dimacs: &str) -> Result<Self, String> {
+        Self::from_dimacs_with_options(dimacs, false)
+    }
+
+    /// Builds the primal variable interaction graph (edges between distinct variables
     /// co-occurring in at least one clause).
+    /// Deduplicates variables per clause to prevent self-loops and false clique inflation.
     pub fn extract_variable_interaction_graph(&self) -> HashMap<usize, HashSet<usize>> {
         let mut adj: HashMap<usize, HashSet<usize>> = (1..=self.n_vars)
             .map(|i| (i, HashSet::new()))
             .collect();
 
         for clause in &self.clauses {
-            let vars: Vec<usize> = clause.iter().map(|&lit| lit.unsigned_abs() as usize).collect();
+            let mut vars_set: HashSet<usize> = clause.iter().map(|&lit| lit.unsigned_abs() as usize).collect();
+            vars_set.retain(|&v| v >= 1 && v <= self.n_vars);
+            let vars: Vec<usize> = vars_set.into_iter().collect();
+
             for i in 0..vars.len() {
                 for j in (i + 1)..vars.len() {
                     let u = vars[i];
                     let v = vars[j];
-                    if u <= self.n_vars && v <= self.n_vars && u != v {
+                    if u != v {
                         adj.get_mut(&u).unwrap().insert(v);
                         adj.get_mut(&v).unwrap().insert(u);
                     }
@@ -79,11 +116,18 @@ impl CNFFormula {
         adj
     }
 
-    /// Identifies dense variable cliques and separates them from sparse clauses.
+    /// Identifies dense variable cliques and partitions clauses into:
+    /// (dense_clusters, sparse_clauses, dense_clauses, boundary_clauses).
+    /// Preserves 100% of clause ownership across partition boundaries.
     pub fn partition_sparse_and_dense_cliques(
         &self,
         density_threshold: f64,
-    ) -> (Vec<HashSet<usize>>, Vec<Vec<i32>>) {
+    ) -> (
+        Vec<HashSet<usize>>,
+        Vec<Vec<i32>>,
+        Vec<Vec<i32>>,
+        Vec<Vec<i32>>,
+    ) {
         let adj = self.extract_variable_interaction_graph();
         let mut dense_clusters: Vec<HashSet<usize>> = Vec::new();
         let mut visited: HashSet<usize> = HashSet::new();
@@ -127,14 +171,22 @@ impl CNFFormula {
             dense_vars.extend(cluster);
         }
 
-        let sparse_clauses = self
-            .clauses
-            .iter()
-            .filter(|clause| !clause.iter().any(|&lit| dense_vars.contains(&(lit.unsigned_abs() as usize))))
-            .cloned()
-            .collect();
+        let mut sparse_clauses = Vec::new();
+        let mut dense_clauses = Vec::new();
+        let mut boundary_clauses = Vec::new();
 
-        (dense_clusters, sparse_clauses)
+        for clause in &self.clauses {
+            let clause_vars: HashSet<usize> = clause.iter().map(|&l| l.unsigned_abs() as usize).collect();
+            if !clause_vars.iter().any(|v| dense_vars.contains(v)) {
+                sparse_clauses.push(clause.clone());
+            } else if dense_clusters.iter().any(|cluster| clause_vars.is_subset(cluster)) {
+                dense_clauses.push(clause.clone());
+            } else {
+                boundary_clauses.push(clause.clone());
+            }
+        }
+
+        (dense_clusters, sparse_clauses, dense_clauses, boundary_clauses)
     }
 }
 
@@ -156,11 +208,24 @@ p cnf 6 7
 5 6 0
 "#;
         let cnf = CNFFormula::from_dimacs(dimacs).expect("Failed to parse DIMACS");
-        let (dense, sparse) = cnf.partition_sparse_and_dense_cliques(0.8);
+        let (dense, sparse, dense_cls, boundary_cls) = cnf.partition_sparse_and_dense_cliques(0.8);
 
         assert!(!dense.is_empty());
         let expected_clique: HashSet<usize> = [1, 2, 3, 4].into_iter().collect();
         assert!(dense.iter().any(|c| c == &expected_clique));
-        assert!(sparse.iter().any(|c| c == &vec![5, 6]));
+        assert_eq!(dense_cls.len(), 6);
+        assert_eq!(sparse.len(), 1);
+        assert_eq!(sparse[0], vec![5, 6]);
+        assert_eq!(sparse.len() + dense_cls.len() + boundary_cls.len(), cnf.clauses.len());
+    }
+
+    #[test]
+    fn test_dimacs_token_streaming_and_strict() {
+        let stream = "c multi-line\np cnf 3 2\n1 2\n3 0 0\n";
+        let cnf = CNFFormula::from_dimacs(stream).expect("stream parse failed");
+        assert_eq!(cnf.clauses, vec![vec![1, 2, 3], vec![]]);
+
+        assert!(CNFFormula::from_dimacs_with_options("p cnf 2 3\n1 2 0\n", true).is_err());
+        assert!(CNFFormula::from_dimacs_with_options("p cnf 2 1\n1 4 0\n", true).is_err());
     }
 }

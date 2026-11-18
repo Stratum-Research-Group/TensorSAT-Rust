@@ -26,15 +26,28 @@ impl StateRMSNorm {
         assert_eq!(state.len(), self.rank * self.dim);
         assert_eq!(out.len(), self.rank * self.dim);
 
+        // Pre-scale by max amplitude to prevent square overflow in float32
+        let mut max_abs = 0.0f32;
+        for &val in state {
+            let abs_v = val.abs();
+            if abs_v > max_abs {
+                max_abs = abs_v;
+            }
+        }
+        let scale = if max_abs > 1.0 { max_abs } else { 1.0 };
+        let inv_scale = 1.0 / scale;
+
         let mut sum_sq = 0.0f32;
         for &val in state {
-            sum_sq += val * val;
+            let scaled_val = val * inv_scale;
+            sum_sq += scaled_val * scaled_val;
         }
         let mean_sq = sum_sq / (state.len() as f32);
-        let rsqrt = 1.0f32 / (mean_sq + self.eps).sqrt();
+        let rms = (mean_sq + self.eps * inv_scale * inv_scale).sqrt() * scale;
+        let inv_rms = 1.0 / rms;
 
         for i in 0..state.len() {
-            out[i] = state[i] * rsqrt * self.scale[i];
+            out[i] = state[i] * inv_rms * self.scale[i];
         }
     }
 }
@@ -94,5 +107,11 @@ mod tests {
         }
         let var = sum_sq / output.len() as f32;
         assert!((var - 1.0).abs() < 1e-3);
+
+        // Test with massive magnitude (1e20) that would overflow naive squares
+        let input_large = vec![1e20f32; rank * dim];
+        norm.forward(&input_large, &mut output);
+        assert!(!output.iter().any(|v| v.is_nan() || v.is_infinite()));
+        assert!((output[0] - 1.0).abs() < 1e-3);
     }
 }
