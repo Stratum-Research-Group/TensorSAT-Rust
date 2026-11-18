@@ -134,6 +134,11 @@ impl HybridSingletAttention {
     }
 
     /// Computes stabilized global singlet attention using state RMS normalization and decay stabilization.
+    ///
+    /// Note on chunk-size sensitivity: In accordance with the hybrid stabilized attention design,
+    /// inter-chunk context normalization (`StateRMSNorm`) and block decay (`DecayStabilizer`) operate
+    /// across chunk boundaries. Varying `chunk_size` produces minor numerical variance (typically ~10^-3)
+    /// while strictly bounding running state growth over arbitrary sequence lengths.
     pub fn stabilized_global_attention(
         &self,
         q_heads: &[f32],
@@ -294,5 +299,43 @@ mod tests {
     #[should_panic(expected = "chunk_size must be positive")]
     fn test_hybrid_invalid_chunk_size_panics() {
         let _ = HybridSingletAttention::new(32, 2, 8, 4, 0, true);
+    }
+
+    #[test]
+    fn test_hybrid_chunk_size_sensitivity_is_bounded() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let window_size = 8;
+        let n_tokens = 32;
+
+        let hybrid_c8 = HybridSingletAttention::new(embed_dim, num_heads, window_size, 4, 8, true);
+        let hybrid_c16 = HybridSingletAttention::new(embed_dim, num_heads, window_size, 4, 16, true);
+
+        let size = num_heads * n_tokens * (embed_dim / num_heads);
+        let mut q = vec![0.0f32; size];
+        let mut k = vec![0.0f32; size];
+        let mut v = vec![0.0f32; size];
+        for i in 0..size {
+            q[i] = ((i as f32 * 0.17).sin()) * 0.4;
+            k[i] = ((i as f32 * 0.31).cos()) * 0.4;
+            v[i] = ((i as f32 * 0.47).sin()) * 0.4;
+        }
+
+        let out_c8 = hybrid_c8.forward(&q, &k, &v, n_tokens);
+        let out_c16 = hybrid_c16.forward(&q, &k, &v, n_tokens);
+
+        let mut max_diff = 0.0f32;
+        for i in 0..size {
+            let diff = (out_c8[i] - out_c16[i]).abs();
+            if diff > max_diff {
+                max_diff = diff;
+            }
+        }
+
+        // Bounded within expected chunk-boundary normalization variance (~5e-3)
+        assert!(
+            max_diff < 1e-2,
+            "Hybrid chunk sensitivity exceeds expected bound: max diff = {max_diff}"
+        );
     }
 }

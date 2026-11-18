@@ -39,6 +39,38 @@ impl SoftmaxToSingletAdapter {
         }
     }
 
+    /// Creates an adapter loading transduction weights directly from raw IEEE 754 f32 slices.
+    pub fn from_transduction_weights(
+        embed_dim: usize,
+        num_heads: usize,
+        num_singlets: usize,
+        q_weights: &[f32],
+        k_weights: &[f32],
+    ) -> Result<Self, String> {
+        if num_heads == 0 || !embed_dim.is_multiple_of(num_heads) {
+            return Err("embed_dim must be divisible by positive num_heads".to_string());
+        }
+        let head_dim = embed_dim / num_heads;
+        let expected_size = num_heads * head_dim * num_singlets;
+        if q_weights.len() != expected_size || k_weights.len() != expected_size {
+            return Err(format!(
+                "transduction weight size mismatch: expected {}, got q={}, k={}",
+                expected_size,
+                q_weights.len(),
+                k_weights.len()
+            ));
+        }
+
+        Ok(Self {
+            embed_dim,
+            num_heads,
+            head_dim,
+            num_singlets,
+            q_trans: q_weights.to_vec(),
+            k_trans: k_weights.to_vec(),
+        })
+    }
+
     /// Projects Q and K with unit-normalization along head_dim and ELU + 1.0 positive activation.
     pub fn forward(
         &self,
@@ -86,11 +118,53 @@ impl SoftmaxToSingletAdapter {
                         q_proj += (q_tok[c] * inv_q) * self.q_trans[h_basis_offset + c * r_singlets + r];
                         k_proj += (k_tok[c] * inv_k) * self.k_trans[h_basis_offset + c * r_singlets + r];
                     }
-                    // ELU(x) + 1.0
-                    q_s[r] = if q_proj > 0.0 { q_proj + 1.0 } else { q_proj.exp() };
-                    k_s[r] = if k_proj > 0.0 { k_proj + 1.0 } else { k_proj.exp() };
+                    // ELU(x) + 1.0; clamped to prevent exact zero from exp underflow
+                    q_s[r] = if q_proj > 0.0 { q_proj + 1.0 } else { q_proj.exp().max(1e-12) };
+                    k_s[r] = if k_proj > 0.0 { k_proj + 1.0 } else { k_proj.exp().max(1e-12) };
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_adapter_from_weights_and_strict_positivity() {
+        let embed_dim = 16;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let size = num_heads * head_dim * num_singlets;
+
+        let q_weights = vec![100.0f32; size]; // Very large positive
+        let k_weights = vec![-100.0f32; size]; // Very large negative (would underflow to 0 without clamp)
+
+        let adapter = SoftmaxToSingletAdapter::from_transduction_weights(
+            embed_dim,
+            num_heads,
+            num_singlets,
+            &q_weights,
+            &k_weights,
+        )
+        .expect("Failed to load adapter weights");
+
+        let n_tokens = 2;
+        let q = vec![1.0f32; num_heads * n_tokens * head_dim];
+        let k = vec![1.0f32; num_heads * n_tokens * head_dim];
+        let mut q_s = vec![0.0f32; num_heads * n_tokens * num_singlets];
+        let mut k_s = vec![0.0f32; num_heads * n_tokens * num_singlets];
+
+        adapter.forward(&q, &k, n_tokens, &mut q_s, &mut k_s);
+
+        // Verify strictly positive
+        for &val in &q_s {
+            assert!(val > 0.0, "q_s must be strictly positive");
+        }
+        for &val in &k_s {
+            assert!(val > 0.0, "k_s must be strictly positive (prevented underflow)");
         }
     }
 }

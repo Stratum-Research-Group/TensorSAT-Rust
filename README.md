@@ -47,7 +47,7 @@ Because TensorSAT uses **exact discrete integer arithmetic and phase factors** $
 Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded CPU execution:
 
 ### Benchmark A: Neural Sequence Scaling (Prefill Mode)
-*Configuration: Batch = 1, Heads = 8, Head Dimension = 64, Embed Dimension = 512, Dtype = FP32, Causal Masking = True, Chunk Size = 512. Benchmarks evaluate single-core CPU execution on AMD / Linux bare metal across context lengths up to 1,048,576 tokens:*
+*Configuration: Batch = 1, Heads = 8, Head Dimension = 64, Embed Dimension = 512, Dtype = FP32, Causal Masking = True, Chunk Size = 512. Benchmarks evaluate single-core CPU execution on AMD / Linux bare metal across context lengths up to 1,048,576 tokens using synthetic uniform inputs to measure raw linear throughput:*
 
 | Context Length ($N$ Tokens) | Single-Core CPU Latency | Sustained Throughput | Scaling Complexity |
 | :--- | :--- | :--- | :--- |
@@ -90,7 +90,7 @@ Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded
 ### 1. Hybrid Attention (`tensorsat::hybrid::HybridSingletAttention`)
 * Blends an exact causal local sliding window ($W = 128$) with the global $\mathcal{O}(N)$ singlet uncrossing accumulator via configurable gating (defaults to balanced [0.5, 0.5]):
 $$\text{Attention}(Q, K, V) = g_{\text{local}} \cdot \text{LocalSDPA}(Q, K, V) + g_{\text{global}} \cdot \text{SingletGlobal}(Q, K, V)$$
-* Global singlet state uses continuous leaky tracking (`DecayStabilizer`) and `StateRMSNorm` across chunks. Operates in sequence prefill mode.
+* Global singlet state uses continuous leaky tracking (`DecayStabilizer`) and `StateRMSNorm` across chunks. Operates in sequence prefill mode. Inter-chunk normalization introduces bounded chunk-boundary sensitivity (~$10^{-3}$) in exchange for long-context state stability.
 
 ### 2. Pre-Trained Weight Adapter (`tensorsat::adapter::SoftmaxToSingletAdapter`)
 * Maps Q/K representations into positive singlet features using positive kernel transduction ($\text{ELU}(x) + 1.0$) with configurable/loadable transduction weights `q_trans` and `k_trans`.

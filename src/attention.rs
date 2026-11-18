@@ -502,4 +502,90 @@ mod tests {
             "Chunk size invariance failed: max diff = {max_diff}"
         );
     }
+
+    #[test]
+    fn test_multi_partition_cache_continuation_equivalence() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let n_tokens = 16;
+        let layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 4, true);
+
+        let size = num_heads * n_tokens * head_dim;
+        let mut q = vec![0.0f32; size];
+        let mut k = vec![0.0f32; size];
+        let mut v = vec![0.0f32; size];
+        for i in 0..size {
+            q[i] = ((i as f32 * 0.17).sin()) * 0.4;
+            k[i] = ((i as f32 * 0.29).cos()) * 0.4;
+            v[i] = ((i as f32 * 0.41).sin()) * 0.4;
+        }
+
+        // Full one-shot prefill
+        let out_full = layer.forward(&q, &k, &v, n_tokens, None);
+
+        // Partitioned cache evaluation: first 10 tokens prefilled, then 6 tokens continuation in one chunk
+        let mut cache = KVCache::new(num_heads, num_singlets, head_dim);
+
+        let p1_len = 10;
+        let p2_len = 6;
+
+        let mut q1 = vec![0.0f32; num_heads * p1_len * head_dim];
+        let mut k1 = vec![0.0f32; num_heads * p1_len * head_dim];
+        let mut v1 = vec![0.0f32; num_heads * p1_len * head_dim];
+
+        let mut q2 = vec![0.0f32; num_heads * p2_len * head_dim];
+        let mut k2 = vec![0.0f32; num_heads * p2_len * head_dim];
+        let mut v2 = vec![0.0f32; num_heads * p2_len * head_dim];
+
+        for h in 0..num_heads {
+            for t in 0..p1_len {
+                for c in 0..head_dim {
+                    q1[h * p1_len * head_dim + t * head_dim + c] = q[h * n_tokens * head_dim + t * head_dim + c];
+                    k1[h * p1_len * head_dim + t * head_dim + c] = k[h * n_tokens * head_dim + t * head_dim + c];
+                    v1[h * p1_len * head_dim + t * head_dim + c] = v[h * n_tokens * head_dim + t * head_dim + c];
+                }
+            }
+            for t in 0..p2_len {
+                for c in 0..head_dim {
+                    q2[h * p2_len * head_dim + t * head_dim + c] = q[h * n_tokens * head_dim + (p1_len + t) * head_dim + c];
+                    k2[h * p2_len * head_dim + t * head_dim + c] = k[h * n_tokens * head_dim + (p1_len + t) * head_dim + c];
+                    v2[h * p2_len * head_dim + t * head_dim + c] = v[h * n_tokens * head_dim + (p1_len + t) * head_dim + c];
+                }
+            }
+        }
+
+        let out1 = layer.forward(&q1, &k1, &v1, p1_len, Some(&mut cache));
+        let out2 = layer.forward(&q2, &k2, &v2, p2_len, Some(&mut cache));
+
+        // Stitch together
+        let mut out_partitioned = vec![0.0f32; size];
+        for h in 0..num_heads {
+            for t in 0..p1_len {
+                for c in 0..head_dim {
+                    out_partitioned[h * n_tokens * head_dim + t * head_dim + c] = out1[h * p1_len * head_dim + t * head_dim + c];
+                }
+            }
+            for t in 0..p2_len {
+                for c in 0..head_dim {
+                    out_partitioned[h * n_tokens * head_dim + (p1_len + t) * head_dim + c] = out2[h * p2_len * head_dim + t * head_dim + c];
+                }
+            }
+        }
+
+        let mut max_diff = 0.0f32;
+        for i in 0..size {
+            let diff = (out_full[i] - out_partitioned[i]).abs();
+            if diff > max_diff {
+                max_diff = diff;
+            }
+        }
+
+        // Within standard f32 accumulation tolerance (~1e-4)
+        assert!(
+            max_diff < 1e-4,
+            "Multi-partition cache continuation differs from prefill: max diff = {max_diff}"
+        );
+    }
 }

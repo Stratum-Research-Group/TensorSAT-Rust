@@ -17,10 +17,12 @@ fn main() {
     let layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 512, true);
 
     println!("\n1. Neural Sequence Scaling (Prefill Mode):");
-    println!("{:<15} | {:<20} | {:<15}", "Tokens (N)", "Latency (ms)", "Complexity");
-    println!("--------------------------------------------------");
+    println!("{:<15} | {:<20} | {:<18} | {:<15}", "Tokens (N)", "Latency (ms)", "Throughput (tok/s)", "Complexity");
+    println!("-----------------------------------------------------------------------------");
 
-    for &n in &[1024, 2048, 4096, 8192, 16384, 32768, 65536] {
+    for &n in &[
+        1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576,
+    ] {
         let size = num_heads * n * head_dim;
         let q = vec![0.05f32; size];
         let k = vec![0.05f32; size];
@@ -30,12 +32,14 @@ fn main() {
         let _ = layer.forward(&q[..num_heads * 64 * head_dim], &k[..num_heads * 64 * head_dim], &v[..num_heads * 64 * head_dim], 64, None);
 
         let t0 = Instant::now();
-        let iters = if n >= 32768 { 2 } else if n >= 8192 { 4 } else { 10 };
+        let iters = if n >= 524288 { 1 } else if n >= 65536 { 2 } else if n >= 8192 { 4 } else { 10 };
         for _ in 0..iters {
-            let _ = layer.forward(&q, &k, &v, n, None);
+            let out = layer.forward(&q, &k, &v, n, None);
+            std::hint::black_box(out);
         }
         let elapsed = t0.elapsed().as_secs_f64() * 1000.0 / iters as f64;
-        println!("{:<15} | {:<20.2} | O(N) linear", n, elapsed);
+        let throughput = (n as f64) / (elapsed / 1000.0);
+        println!("{:<15} | {:<20.2} | {:<18.1} | O(N) linear", n, elapsed, throughput);
     }
 
     println!("\n2. Incremental Autoregressive Generation Throughput (KVCache):");
