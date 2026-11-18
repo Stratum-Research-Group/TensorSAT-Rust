@@ -47,7 +47,8 @@ impl SoftmaxToSingletAdapter {
         q_weights: &[f32],
         k_weights: &[f32],
     ) -> Result<Self, String> {
-        if num_heads == 0 || !embed_dim.is_multiple_of(num_heads) {
+        #[allow(clippy::manual_is_multiple_of)]
+        if num_heads == 0 || embed_dim % num_heads != 0 {
             return Err("embed_dim must be divisible by positive num_heads".to_string());
         }
         let head_dim = embed_dim / num_heads;

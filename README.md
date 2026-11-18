@@ -38,13 +38,13 @@ $$\text{rank}_{\text{row}}(A_i) \cdot \text{rank}_{\text{col}}(A_i) \le 12^\lamb
 ### Exact IEEE 754 Representation
 Because TensorSAT uses **exact discrete integer arithmetic and phase factors** $\{-1, 0, 1\}$:
 * It produces **zero representation drift** in IEEE 754 double precision (`FP64`) and complex floating-point (`Complex64` / pairs of `f64`) tensor contraction ($\le 10^{-15}$ machine epsilon).
-* Incremental cached generation matches full sequence prefill within standard IEEE floating-point tolerance ($\le 10^{-7}$).
+* Incremental cached generation matches full sequence prefill within standard IEEE floating-point tolerance (empirically observed $\le 10^{-7}$ on single-partition uniform tests; regression test gates enforce $< 10^{-6}$ for single-partition and $< 10^{-4}$ for multi-partition continuation).
 
 ---
 
 ## 2. Empirical Benchmarks (Measured on AMD / Linux Bare Metal)
 
-Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded CPU execution:
+Executed with `cargo run --release --bin benchmark_tensorsat` (rows above 65,536 tokens require `-- --large`) on single-threaded CPU execution:
 
 ### Benchmark A: Neural Sequence Scaling (Prefill Mode)
 *Configuration: Batch = 1, Heads = 8, Head Dimension = 64, Embed Dimension = 512, Dtype = FP32, Causal Masking = True, Chunk Size = 512. Benchmarks evaluate single-core CPU execution on AMD / Linux bare metal across context lengths up to 1,048,576 tokens using synthetic uniform inputs to measure raw linear throughput:*
