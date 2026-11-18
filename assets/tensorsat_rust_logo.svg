@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1376" height="768" viewBox="0 0 1376 768">
+  <defs>
+    <style>
+      .brand-title {
+        font-family: 'Nimbus Sans', 'Liberation Sans', 'DejaVu Sans', 'Arial', sans-serif;
+        font-size: 132px;
+        font-weight: 700;
+        fill: #000000;
+        letter-spacing: -2px;
+      }
+      .brand-subtitle {
+        font-family: 'Nimbus Sans', 'Liberation Sans', 'DejaVu Sans', 'Arial', sans-serif;
+        font-size: 64px;
+        font-weight: 400;
+        fill: #000000;
+        letter-spacing: -0.5px;
+      }
+      .brand-edition {
+        font-family: 'Nimbus Sans', 'Liberation Sans', 'DejaVu Sans', 'Arial', sans-serif;
+        font-size: 34px;
+        font-weight: 700;
+        fill: #D32F2F;
+        letter-spacing: 0.5px;
+      }
+    </style>
+  </defs>
+
+  <!-- Background matching exact dioptra_logo.jpg canvas tone -->
+  <rect width="1376" height="768" fill="#EAEAE8"/>
+
+  <!-- Left Side: Project Emblem -->
+  
+        <!-- 4x4 Planar Tensor Grid with Crossing Diagonal Decomposition -->
+        <g stroke="#000000" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none">
+            <!-- Grid horizontal and vertical lattice wires -->
+            <line x1="262" y1="282" x2="522" y2="282" />
+            <line x1="262" y1="382" x2="522" y2="382" stroke-width="8" />
+            <line x1="262" y1="482" x2="522" y2="482" />
+            
+            <line x1="292" y1="252" x2="292" y2="512" />
+            <line x1="392" y1="252" x2="392" y2="512" stroke-width="8" />
+            <line x1="492" y1="252" x2="492" y2="512" />
+            
+            <!-- Diagonal Crossing Swaps X1 -->
+            <line x1="292" y1="282" x2="492" y2="482" stroke-dasharray="16,10" />
+            <line x1="292" y1="482" x2="492" y2="282" stroke-dasharray="16,10" />
+            
+            <!-- Central Uncrossed Singlet Ring -->
+            <ellipse cx="392" cy="382" rx="44" ry="44" fill="#EAEAE8" stroke="#000000" stroke-width="8" />
+            <circle cx="392" cy="382" r="14" fill="#000000" />
+            
+            <!-- Vertex nodes -->
+            <circle cx="292" cy="282" r="9" fill="#000000" />
+            <circle cx="492" cy="282" r="9" fill="#000000" />
+            <circle cx="292" cy="482" r="9" fill="#000000" />
+            <circle cx="492" cy="482" r="9" fill="#000000" />
+            <circle cx="392" cy="282" r="8" fill="#EAEAE8" stroke="#000000" stroke-width="6" />
+            <circle cx="392" cy="482" r="8" fill="#EAEAE8" stroke="#000000" stroke-width="6" />
+            <circle cx="292" cy="382" r="8" fill="#EAEAE8" stroke="#000000" stroke-width="6" />
+            <circle cx="492" cy="382" r="8" fill="#EAEAE8" stroke="#000000" stroke-width="6" />
+        </g>
+        
+
+  <!-- Vertical Divider Bar -->
+  <line x1="632" y1="185" x2="632" y2="582" stroke="#000000" stroke-width="8" stroke-linecap="square"/>
+
+  <!-- Right Side: Project Name + Stratum Research Group Typography -->
+  <text x="688" y="323" class="brand-title">TensorSAT</text>
+  <text x="1348" y="362" text-anchor="end" class="brand-edition">Rust Edition</text>
+  <text x="688" y="418" class="brand-subtitle">Stratum</text>
+  <text x="688" y="492" class="brand-subtitle">Research</text>
+  <text x="688" y="568" class="brand-subtitle">Group</text>
+</svg>

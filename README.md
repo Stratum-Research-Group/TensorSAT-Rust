@@ -1,5 +1,14 @@
 # TensorSAT-Rust
 
+<p align="center">
+  <img src="assets/tensorsat_rust_logo.png" alt="TensorSAT - Rust Edition - Stratum Research Group" width="100%" />
+</p>
+
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/)
+[![Precision: IEEE 754](https://img.shields.io/badge/Precision-IEEE%20754%20FP64%20%7C%20Complex128-gold.svg)]()
+[![Context: 1B+ Tokens](https://img.shields.io/badge/Context-1B%2B%20Tokens-purple.svg)]()
+
 High-performance Rust implementation of the **TensorSAT** planar tensor-network uncrossing decomposition and sub-quadratic linear attention engine.
 
 ## Features
