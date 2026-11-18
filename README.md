@@ -6,8 +6,8 @@
 
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Rust](https://img.shields.io/badge/Rust-2021%20Edition-orange.svg)](https://www.rust-lang.org/)
-[![Precision: IEEE 754](https://img.shields.io/badge/Precision-IEEE%20754%20FP64%20%7C%20Complex128-gold.svg)]()
-[![Context: 1B+ Tokens](https://img.shields.io/badge/Context-1B%2B%20Tokens-purple.svg)]()
+[![Precision: IEEE 754](https://img.shields.io/badge/Precision-IEEE%20754%20FP64%20%7C%20Complex64-gold.svg)]()
+[![Context: Linear O(N)](https://img.shields.io/badge/Context-Linear%20O(N)%20Scaling-purple.svg)]()
 
 **TensorSAT-Rust** is the official high-performance, memory-safe Rust implementation of the **TensorSAT** planar tensor-network uncrossing decomposition and sub-quadratic linear attention engine developed by the **Stratum Research Group**.
 
@@ -37,7 +37,7 @@ $$\text{rank}_{\text{row}}(A_i) \cdot \text{rank}_{\text{col}}(A_i) \le 12^\lamb
 
 ### Exact IEEE 754 Representation
 Because TensorSAT uses **exact discrete integer arithmetic and phase factors** $\{-1, 0, 1\}$:
-* It produces **zero representation drift** in IEEE 754 double precision (`FP64`) and complex floating-point (`Complex128`) tensor contraction ($\le 10^{-15}$ machine epsilon).
+* It produces **zero representation drift** in IEEE 754 double precision (`FP64`) and complex floating-point (`Complex64` / pairs of `f64`) tensor contraction ($\le 10^{-15}$ machine epsilon).
 * Incremental cached generation matches full sequence prefill within standard IEEE floating-point tolerance ($\le 10^{-7}$).
 
 ---
@@ -47,17 +47,21 @@ Because TensorSAT uses **exact discrete integer arithmetic and phase factors** $
 Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded CPU execution:
 
 ### Benchmark A: Neural Sequence Scaling (Prefill Mode)
-*Configuration: Batch = 1, Heads = 8, Head Dimension = 64, Embed Dimension = 512, Dtype = FP32, Causal Masking = True*
+*Configuration: Batch = 1, Heads = 8, Head Dimension = 64, Embed Dimension = 512, Dtype = FP32, Causal Masking = True, Chunk Size = 512. Benchmarks evaluate single-core CPU execution on AMD / Linux bare metal across context lengths up to 1,048,576 tokens:*
 
-| Context Length ($N$ Tokens) | Single-Core CPU Latency | Scaling Complexity |
-| :--- | :--- | :--- |
-| **1,024 tokens** | **11.69 ms** | $\mathcal{O}(N)$ linear |
-| **2,048 tokens** | **23.12 ms** | $\mathcal{O}(N)$ linear |
-| **4,096 tokens** | **47.06 ms** | $\mathcal{O}(N)$ linear |
-| **8,192 tokens** | **94.96 ms** | $\mathcal{O}(N)$ linear |
-| **16,384 tokens** | **207.19 ms** | $\mathcal{O}(N)$ linear |
-| **32,768 tokens** | **405.44 ms** | $\mathcal{O}(N)$ linear |
-| **65,536 tokens** | **935.01 ms** | $\mathcal{O}(N)$ linear |
+| Context Length ($N$ Tokens) | Single-Core CPU Latency | Sustained Throughput | Scaling Complexity |
+| :--- | :--- | :--- | :--- |
+| **1,024 tokens** | **13.3 ms** | 77,132 tok/s | $\mathcal{O}(N)$ linear |
+| **2,048 tokens** | **23.6 ms** | 86,854 tok/s | $\mathcal{O}(N)$ linear |
+| **4,096 tokens** | **46.9 ms** | 87,383 tok/s | $\mathcal{O}(N)$ linear |
+| **8,192 tokens** | **93.9 ms** | 87,250 tok/s | $\mathcal{O}(N)$ linear |
+| **16,384 tokens** | **196.5 ms** | 83,391 tok/s | $\mathcal{O}(N)$ linear |
+| **32,768 tokens** | **430.0 ms** | 76,196 tok/s | $\mathcal{O}(N)$ linear |
+| **65,536 tokens** | **824.0 ms** | 79,536 tok/s | $\mathcal{O}(N)$ linear |
+| **131,072 tokens** | **1.64 s** | 79,997 tok/s | $\mathcal{O}(N)$ linear |
+| **262,144 tokens** | **3.29 s** | 79,653 tok/s | $\mathcal{O}(N)$ linear |
+| **524,288 tokens** | **6.24 s** | 84,025 tok/s | $\mathcal{O}(N)$ linear |
+| **1,048,576 tokens (1M)** | **13.23 s** | **79,272 tok/s** | $\mathcal{O}(N)$ linear |
 
 ### Benchmark B: Autoregressive KV-Cache Throughput (Token Generation)
 *Measuring step latency for generating next tokens across prefill prompt depths:*
@@ -71,7 +75,7 @@ Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded
 *Observation: Because the low-rank singlet context updates recursively ($S_t = S_{t-1} + k_t^T v_t$), generation latency is strictly constant ($O(1)$) regardless of context depth, delivering over $75{,}000$ tokens/second per CPU core.*
 
 ### Benchmark C: IEEE 754 High-Precision Double (`FP64`) Scientific Contraction
-*Evaluating 4-index tensor contractions in exact 64-bit floating point:*
+*Evaluating 4-index tensor contractions in exact 64-bit floating point. Note that dense slice materialization and contraction evaluates all $2^\lambda \times 2^\lambda \times 2^\lambda \times 2^\lambda$ entries, scaling as $(\lambda + 1) \cdot 16^\lambda$:*
 
 | Dimension ($2^\lambda$) | Contraction Time | Maximum Numerical Drift vs. Exact Naive |
 | :--- | :--- | :--- |
@@ -84,13 +88,13 @@ Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded
 ## 3. Production Architecture (v0.2.0 Modules)
 
 ### 1. Hybrid Attention (`tensorsat::hybrid::HybridSingletAttention`)
-* Blends an exact causal local sliding window ($W = 128$) with the global $\mathcal{O}(N)$ singlet uncrossing accumulator via learned/balanced gating:
+* Blends an exact causal local sliding window ($W = 128$) with the global $\mathcal{O}(N)$ singlet uncrossing accumulator via configurable gating (defaults to balanced [0.5, 0.5]):
 $$\text{Attention}(Q, K, V) = g_{\text{local}} \cdot \text{LocalSDPA}(Q, K, V) + g_{\text{global}} \cdot \text{SingletGlobal}(Q, K, V)$$
-* Delivers 100% exact immediate syntactic resolution while delegating infinite background context to the linear engine.
+* Global singlet state uses continuous leaky tracking (`DecayStabilizer`) and `StateRMSNorm` across chunks. Operates in sequence prefill mode.
 
 ### 2. Pre-Trained Weight Adapter (`tensorsat::adapter::SoftmaxToSingletAdapter`)
-* Maps frozen weights from standard transformer checkpoints (Llama, Mistral, Gemma) into linear singlet invariant space without pre-training from scratch.
-* Uses positive kernel transduction ($\text{ELU}(x) + 1.0$) and feature-matching distillation against causal SDPA targets.
+* Maps Q/K representations into positive singlet features using positive kernel transduction ($\text{ELU}(x) + 1.0$) with configurable/loadable transduction weights `q_trans` and `k_trans`.
+* Projected positive features `q_s` and `k_s` can be supplied to downstream linear uncrossing attention layers.
 
 ### 3. Numerical Stabilizers (`tensorsat::stabilizer::DecayStabilizer`, `StateRMSNorm`)
 * Implements continuous leaky tracking $S_t = \gamma^C S_{t-1} + K_s^T V$, guaranteeing bounded spectral radius:

@@ -8,6 +8,11 @@ use num_complex::Complex64;
 /// High-precision IEEE tensor contractor.
 /// Computes Z = sum_{x,y,u,v} W1[x, y] * cross(x, y, u, v) * W2[u, v]
 /// using exact discrete uncrossing slices A_i.
+///
+/// Note on complexity: Dense slice generation and direct contraction across flat slices
+/// has cost O((n_bits + 1) * 16^n_bits) operations. While each slice has low rank-product
+/// rank_row * rank_col <= 12^n_bits, dense 4-tensor contraction operates directly on the
+/// materialized 2^n x 2^n x 2^n x 2^n arrays.
 pub struct IEEETensorContractor {
     pub n_bits: usize,
     pub dim: usize,
@@ -16,6 +21,11 @@ pub struct IEEETensorContractor {
 
 impl IEEETensorContractor {
     pub fn new(n_bits: usize) -> Self {
+        assert!(
+            n_bits <= 4,
+            "n_bits must be <= 4 for dense slice materialization in IEEETensorContractor (scales as (n+1)*16^n f64; got n_bits={})",
+            n_bits
+        );
         let dim = 1 << n_bits;
         let size = dim * dim * dim * dim;
         let mut slices = Vec::with_capacity(n_bits + 1);

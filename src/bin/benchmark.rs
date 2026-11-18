@@ -53,7 +53,7 @@ fn main() {
         let _ = layer.forward(&prompt_q, &prompt_k, &prompt_v, p, Some(&mut cache));
 
         // Generate 100 single steps
-        let token_size = num_heads * 1 * head_dim;
+        let token_size = num_heads * head_dim;
         let tok_q = vec![0.02f32; token_size];
         let tok_k = vec![0.02f32; token_size];
         let tok_v = vec![0.02f32; token_size];

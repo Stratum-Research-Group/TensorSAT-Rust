@@ -80,7 +80,10 @@ impl SingletAttention {
         chunk_size: usize,
         is_causal: bool,
     ) -> Self {
-        assert_eq!(embed_dim % num_heads, 0);
+        assert!(num_heads > 0, "num_heads must be positive");
+        assert_eq!(embed_dim % num_heads, 0, "embed_dim must be divisible by num_heads");
+        assert!(chunk_size > 0, "chunk_size must be positive");
+        assert!(num_singlets > 0, "num_singlets must be positive");
         let head_dim = embed_dim / num_heads;
         let basis_size = num_heads * head_dim * num_singlets;
 
@@ -169,6 +172,10 @@ impl SingletAttention {
 
         // 2. Incremental KV-Cache Mode
         if let Some(cache) = kv_cache {
+            assert!(
+                self.is_causal,
+                "KV-cache autoregressive mode is only supported with is_causal=true"
+            );
             let start_pos = cache.seq_len;
             let d_sqrt = (d as f32).sqrt();
 
@@ -238,8 +245,53 @@ impl SingletAttention {
             return out;
         }
 
-        // 3. Parallel Prefill Forward (Chunked Causal Accumulation)
+        // 3. Parallel Prefill Forward
         let d_sqrt = (d as f32).sqrt();
+
+        if !self.is_causal {
+            // Non-causal bidirectional prefill: full context contraction
+            // Matches Python attention.py:196-197:
+            //   kv_context = torch.einsum('bhnr,bhnd->bhrd', K_s, V) / math.sqrt(N)
+            //   out_global = torch.einsum('bhnr,bhrd->bhnd', Q_s, kv_context) / math.sqrt(d)
+            // with total normalization factor sqrt(N * d).
+            let norm_factor = ((n_tokens * d) as f32).sqrt();
+            let inv_norm = if norm_factor > 0.0 { 1.0 / norm_factor } else { 1.0 };
+
+            for h in 0..h_heads {
+                let h_tok_offset = h * n_tokens * d;
+                let h_s_offset = h * n_tokens * r_singlets;
+
+                // kv_context: shape (r_singlets, d)
+                let mut kv_context = vec![0.0f32; r_singlets * d];
+                for n in 0..n_tokens {
+                    let k_tok = &k_s[h_s_offset + n * r_singlets..h_s_offset + (n + 1) * r_singlets];
+                    let v_tok = &v_heads[h_tok_offset + n * d..h_tok_offset + (n + 1) * d];
+                    for r in 0..r_singlets {
+                        let kr = k_tok[r];
+                        for c in 0..d {
+                            kv_context[r * d + c] += kr * v_tok[c];
+                        }
+                    }
+                }
+
+                // Contract Q_s with kv_context
+                for n in 0..n_tokens {
+                    let q_tok = &q_s[h_s_offset + n * r_singlets..h_s_offset + (n + 1) * r_singlets];
+                    let out_tok = &mut out[h_tok_offset + n * d..h_tok_offset + (n + 1) * d];
+                    for c in 0..d {
+                        let mut sum = 0.0f32;
+                        for r in 0..r_singlets {
+                            sum += q_tok[r] * kv_context[r * d + c];
+                        }
+                        out_tok[c] = sum * inv_norm;
+                    }
+                }
+            }
+
+            return out;
+        }
+
+        // Causal Parallel Prefill Forward (Chunked Causal Accumulation)
         let chunk = self.chunk_size;
 
         for h in 0..h_heads {
@@ -354,6 +406,100 @@ mod tests {
         assert!(
             max_diff < 1e-6,
             "Stepwise cached forward differs from prefill: max diff = {max_diff}"
+        );
+    }
+
+    #[test]
+    fn test_noncausal_prefill_differs_from_causal() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let n_tokens = 8;
+
+        let causal_layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 4, true);
+        let noncausal_layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 4, false);
+
+        let size = num_heads * n_tokens * head_dim;
+        let mut q = vec![0.0f32; size];
+        let mut k = vec![0.0f32; size];
+        let mut v = vec![0.0f32; size];
+        for i in 0..size {
+            q[i] = ((i as f32 * 0.17).sin()) * 0.5;
+            k[i] = ((i as f32 * 0.29).cos()) * 0.5;
+            v[i] = ((i as f32 * 0.43).sin()) * 0.5;
+        }
+
+        let out_causal = causal_layer.forward(&q, &k, &v, n_tokens, None);
+        let out_noncausal = noncausal_layer.forward(&q, &k, &v, n_tokens, None);
+
+        // First token in causal sees only itself; in noncausal it sees all future tokens as well.
+        let mut diff_sum = 0.0f32;
+        for i in 0..size {
+            diff_sum += (out_causal[i] - out_noncausal[i]).abs();
+        }
+        assert!(
+            diff_sum > 1e-4,
+            "Expected noncausal output to differ from causal output, got diff_sum = {diff_sum}"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "KV-cache autoregressive mode is only supported with is_causal=true")]
+    fn test_cache_noncausal_rejected() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let noncausal_layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 4, false);
+        let mut cache = KVCache::new(num_heads, num_singlets, head_dim);
+
+        let q = vec![0.1f32; num_heads * head_dim];
+        let k = vec![0.1f32; num_heads * head_dim];
+        let v = vec![0.1f32; num_heads * head_dim];
+        let _ = noncausal_layer.forward(&q, &k, &v, 1, Some(&mut cache));
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_size must be positive")]
+    fn test_chunk_size_zero_panics() {
+        let _ = SingletAttention::new(32, 2, 4, 0, true);
+    }
+
+    #[test]
+    fn test_chunk_size_invariance() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let n_tokens = 16;
+
+        let layer_chunk2 = SingletAttention::new(embed_dim, num_heads, num_singlets, 2, true);
+        let layer_chunk8 = SingletAttention::new(embed_dim, num_heads, num_singlets, 8, true);
+
+        let size = num_heads * n_tokens * head_dim;
+        let mut q = vec![0.0f32; size];
+        let mut k = vec![0.0f32; size];
+        let mut v = vec![0.0f32; size];
+        for i in 0..size {
+            q[i] = ((i as f32 * 0.13).sin()) * 0.4;
+            k[i] = ((i as f32 * 0.27).cos()) * 0.4;
+            v[i] = ((i as f32 * 0.39).sin()) * 0.4;
+        }
+
+        let out2 = layer_chunk2.forward(&q, &k, &v, n_tokens, None);
+        let out8 = layer_chunk8.forward(&q, &k, &v, n_tokens, None);
+
+        let mut max_diff = 0.0f32;
+        for i in 0..size {
+            let diff = (out2[i] - out8[i]).abs();
+            if diff > max_diff {
+                max_diff = diff;
+            }
+        }
+        assert!(
+            max_diff < 1e-6,
+            "Chunk size invariance failed: max diff = {max_diff}"
         );
     }
 }

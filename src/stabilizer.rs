@@ -22,6 +22,7 @@ impl StateRMSNorm {
     }
 
     /// Normalizes a state tensor slice of shape (rank, dim) in-place or into a new buffer.
+    /// Handles zero or non-finite inputs by clamping non-finite values to zero to prevent NaN propagation.
     pub fn forward(&self, state: &[f32], out: &mut [f32]) {
         assert_eq!(state.len(), self.rank * self.dim);
         assert_eq!(out.len(), self.rank * self.dim);
@@ -29,7 +30,7 @@ impl StateRMSNorm {
         // Pre-scale by max amplitude to prevent square overflow in float32
         let mut max_abs = 0.0f32;
         for &val in state {
-            let abs_v = val.abs();
+            let abs_v = if val.is_finite() { val.abs() } else { 0.0 };
             if abs_v > max_abs {
                 max_abs = abs_v;
             }
@@ -39,7 +40,8 @@ impl StateRMSNorm {
 
         let mut sum_sq = 0.0f32;
         for &val in state {
-            let scaled_val = val * inv_scale;
+            let clean_val = if val.is_finite() { val } else { 0.0 };
+            let scaled_val = clean_val * inv_scale;
             sum_sq += scaled_val * scaled_val;
         }
         let mean_sq = sum_sq / (state.len() as f32);
@@ -47,7 +49,8 @@ impl StateRMSNorm {
         let inv_rms = 1.0 / rms;
 
         for i in 0..state.len() {
-            out[i] = state[i] * inv_rms * self.scale[i];
+            let clean_val = if state[i].is_finite() { state[i] } else { 0.0 };
+            out[i] = clean_val * inv_rms * self.scale[i];
         }
     }
 }
@@ -63,6 +66,12 @@ pub struct DecayStabilizer {
 
 impl DecayStabilizer {
     pub fn new(num_heads: usize, base_decay: f32) -> Self {
+        assert!(num_heads > 0, "num_heads must be positive");
+        assert!(
+            base_decay > 0.0 && base_decay <= 1.0,
+            "base_decay must be in range (0, 1] (got {})",
+            base_decay
+        );
         Self {
             num_heads,
             base_decay,
@@ -113,5 +122,19 @@ mod tests {
         norm.forward(&input_large, &mut output);
         assert!(!output.iter().any(|v| v.is_nan() || v.is_infinite()));
         assert!((output[0] - 1.0).abs() < 1e-3);
+
+        // Test non-finite input handling (does not propagate NaN)
+        let mut input_nonfinite = vec![1.0f32; rank * dim];
+        input_nonfinite[0] = f32::INFINITY;
+        input_nonfinite[1] = f32::NEG_INFINITY;
+        input_nonfinite[2] = f32::NAN;
+        norm.forward(&input_nonfinite, &mut output);
+        assert!(!output.iter().any(|v| v.is_nan()));
+    }
+
+    #[test]
+    #[should_panic(expected = "base_decay must be in range (0, 1]")]
+    fn test_decay_stabilizer_invalid_range_panics() {
+        let _ = DecayStabilizer::new(4, 1.5);
     }
 }

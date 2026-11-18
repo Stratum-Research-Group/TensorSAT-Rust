@@ -22,6 +22,7 @@ pub fn s_factor(p: u32, q: u32) -> i32 {
 /// sum over subsets S of size i:
 ///   term = prod_{k in S} (-s(x_k, y_k)*s(u_k, v_k)) * prod_{k not in S} [x_k == u_k and y_k == v_k]
 pub fn eval_slice_a(n_bits: usize, i: usize, x: usize, y: usize, u: usize, v: usize) -> i32 {
+    assert!(i <= n_bits, "i must be <= n_bits (got i={}, n_bits={})", i, n_bits);
     let mut total = 0i32;
 
     // Helper for combinations
@@ -94,7 +95,15 @@ pub fn eval_slice_a(n_bits: usize, i: usize, x: usize, y: usize, u: usize, v: us
 
 /// Generates the (n_bits + 1) slice tensors A_0 ... A_n in row-major flat vectors.
 /// Each slice has dimension (2^n, 2^n, 2^n, 2^n).
+///
+/// Guarded against memory explosion: dense allocation scales as (n_bits + 1) * 16^n_bits f64.
+/// Enforces n_bits <= 4 (max ~327,680 f64 values, ~2.6 MB).
 pub fn generate_uncrossing_tensor(n_bits: usize) -> Vec<Vec<f64>> {
+    assert!(
+        n_bits <= 4,
+        "n_bits must be <= 4 for dense slice materialization (scales as (n+1)*16^n f64; got n_bits={})",
+        n_bits
+    );
     let dim = 1 << n_bits;
     let size = dim * dim * dim * dim;
     let mut slices = Vec::with_capacity(n_bits + 1);
@@ -145,5 +154,17 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    #[should_panic(expected = "i must be <= n_bits")]
+    fn test_eval_slice_a_i_greater_than_n_bits_panics() {
+        let _ = eval_slice_a(2, 3, 0, 0, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "n_bits must be <= 4")]
+    fn test_generate_uncrossing_tensor_large_n_bits_panics() {
+        let _ = generate_uncrossing_tensor(5);
     }
 }

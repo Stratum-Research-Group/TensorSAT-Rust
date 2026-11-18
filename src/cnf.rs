@@ -11,6 +11,13 @@ pub struct CNFFormula {
     pub clauses: Vec<Vec<i32>>,
 }
 
+pub type CNFPartition = (
+    Vec<HashSet<usize>>,
+    Vec<Vec<i32>>,
+    Vec<Vec<i32>>,
+    Vec<Vec<i32>>,
+);
+
 impl CNFFormula {
     pub fn new(n_vars: usize, clauses: Vec<Vec<i32>>) -> Self {
         Self { n_vars, clauses }
@@ -119,15 +126,15 @@ impl CNFFormula {
     /// Identifies dense variable cliques and partitions clauses into:
     /// (dense_clusters, sparse_clauses, dense_clauses, boundary_clauses).
     /// Preserves 100% of clause ownership across partition boundaries.
+    ///
+    /// Note on clique detection heuristic: Candidate clusters are formed by v union N(v)
+    /// for vertices with degree >= 3 (cluster size k >= 4). Cluster density is evaluated over
+    /// all pairs in the candidate set; low-degree pendant neighbors of v can dilute the density
+    /// score below the threshold. Clause conservation is strictly guaranteed regardless.
     pub fn partition_sparse_and_dense_cliques(
         &self,
         density_threshold: f64,
-    ) -> (
-        Vec<HashSet<usize>>,
-        Vec<Vec<i32>>,
-        Vec<Vec<i32>>,
-        Vec<Vec<i32>>,
-    ) {
+    ) -> CNFPartition {
         let adj = self.extract_variable_interaction_graph();
         let mut dense_clusters: Vec<HashSet<usize>> = Vec::new();
         let mut visited: HashSet<usize> = HashSet::new();
@@ -217,6 +224,45 @@ p cnf 6 7
         assert_eq!(sparse.len(), 1);
         assert_eq!(sparse[0], vec![5, 6]);
         assert_eq!(sparse.len() + dense_cls.len() + boundary_cls.len(), cnf.clauses.len());
+    }
+
+    #[test]
+    fn test_cnf_pendant_dilution_and_clause_conservation() {
+        // 4-clique {1, 2, 3, 4} with 2 private pendant neighbors per clique vertex:
+        // Vertex 1: 10, 11
+        // Vertex 2: 20, 21
+        // Vertex 3: 30, 31
+        // Vertex 4: 40, 41
+        // Total clauses: 6 (clique) + 8 (pendants) = 14 clauses.
+        let dimacs = r#"
+p cnf 42 14
+1 2 0
+2 3 0
+3 4 0
+1 4 0
+2 4 0
+1 3 0
+1 10 0
+1 11 0
+2 20 0
+2 21 0
+3 30 0
+3 31 0
+4 40 0
+4 41 0
+"#;
+        let cnf = CNFFormula::from_dimacs(dimacs).expect("Failed to parse DIMACS");
+        let (dense, sparse, dense_cls, boundary_cls) = cnf.partition_sparse_and_dense_cliques(0.8);
+
+        // Due to pendant dilution, candidate cluster v U N(v) has size 6 with density diluted below 0.8.
+        // As documented in Item 13, all clauses fall into the sparse bucket under high threshold.
+        // Clause conservation MUST strictly hold regardless.
+        assert_eq!(
+            sparse.len() + dense_cls.len() + boundary_cls.len(),
+            cnf.clauses.len()
+        );
+        assert_eq!(sparse.len() + dense_cls.len() + boundary_cls.len(), 14);
+        let _ = dense;
     }
 
     #[test]

@@ -16,6 +16,7 @@ pub struct HybridSingletAttention {
     pub num_singlets: usize,
     pub chunk_size: usize,
     pub is_causal: bool,
+    pub gate: [f32; 2],
 
     pub singlet_attn: SingletAttention,
     pub state_norm: StateRMSNorm,
@@ -31,7 +32,11 @@ impl HybridSingletAttention {
         chunk_size: usize,
         is_causal: bool,
     ) -> Self {
-        assert_eq!(embed_dim % num_heads, 0);
+        assert!(num_heads > 0, "num_heads must be positive");
+        assert_eq!(embed_dim % num_heads, 0, "embed_dim must be divisible by num_heads");
+        assert!(window_size > 0, "window_size must be positive");
+        assert!(num_singlets > 0, "num_singlets must be positive");
+        assert!(chunk_size > 0, "chunk_size must be positive");
         let head_dim = embed_dim / num_heads;
 
         let singlet_attn = SingletAttention::new(embed_dim, num_heads, num_singlets, chunk_size, is_causal);
@@ -46,6 +51,7 @@ impl HybridSingletAttention {
             num_singlets,
             chunk_size,
             is_causal,
+            gate: [0.5, 0.5],
             singlet_attn,
             state_norm,
             decay_stabilizer,
@@ -74,10 +80,10 @@ impl HybridSingletAttention {
 
             for t in 0..n_tokens {
                 let start_key = if self.is_causal {
-                    if t >= w_size { t - w_size + 1 } else { 0 }
+                    t.saturating_sub(w_size - 1)
                 } else {
                     let half = w_size / 2;
-                    if t >= half { t - half } else { 0 }
+                    t.saturating_sub(half)
                 };
                 let end_key = if self.is_causal {
                     t + 1
@@ -127,7 +133,92 @@ impl HybridSingletAttention {
         out
     }
 
-    /// Fused forward pass: 0.5 * Local_SDPA + 0.5 * Global_SingletAttention
+    /// Computes stabilized global singlet attention using state RMS normalization and decay stabilization.
+    pub fn stabilized_global_attention(
+        &self,
+        q_heads: &[f32],
+        k_heads: &[f32],
+        v_heads: &[f32],
+        n_tokens: usize,
+    ) -> Vec<f32> {
+        let h_heads = self.num_heads;
+        let d = self.head_dim;
+        let r_singlets = self.num_singlets;
+        let total_size = h_heads * n_tokens * d;
+
+        assert_eq!(q_heads.len(), total_size);
+        assert_eq!(k_heads.len(), total_size);
+        assert_eq!(v_heads.len(), total_size);
+
+        if !self.is_causal {
+            return self.singlet_attn.forward(q_heads, k_heads, v_heads, n_tokens, None);
+        }
+
+        // 1. Low-rank singlet projections
+        let mut q_s = vec![0.0f32; h_heads * n_tokens * r_singlets];
+        let mut k_s = vec![0.0f32; h_heads * n_tokens * r_singlets];
+        SingletAttention::project_singlets(h_heads, d, r_singlets, n_tokens, q_heads, &self.singlet_attn.singlet_u, &mut q_s);
+        SingletAttention::project_singlets(h_heads, d, r_singlets, n_tokens, k_heads, &self.singlet_attn.singlet_v, &mut k_s);
+
+        let mut out = vec![0.0f32; total_size];
+        let d_sqrt = (d as f32).sqrt();
+        let chunk = self.chunk_size;
+
+        for h in 0..h_heads {
+            let h_tok_offset = h * n_tokens * d;
+            let h_s_offset = h * n_tokens * r_singlets;
+
+            let mut running_context = vec![0.0f32; r_singlets * d];
+            let mut normed_context = vec![0.0f32; r_singlets * d];
+
+            for start in (0..n_tokens).step_by(chunk) {
+                let end = (start + chunk).min(n_tokens);
+                let c_len = end - start;
+
+                // Apply StateRMSNorm to running inter-chunk context
+                self.state_norm.forward(&running_context, &mut normed_context);
+
+                let mut intra_acc = vec![0.0f32; r_singlets * d];
+
+                for t in 0..c_len {
+                    let global_pos = start + t;
+                    let q_tok = &q_s[h_s_offset + global_pos * r_singlets..h_s_offset + (global_pos + 1) * r_singlets];
+                    let k_tok = &k_s[h_s_offset + global_pos * r_singlets..h_s_offset + (global_pos + 1) * r_singlets];
+                    let v_tok = &v_heads[h_tok_offset + global_pos * d..h_tok_offset + (global_pos + 1) * d];
+                    let out_tok = &mut out[h_tok_offset + global_pos * d..h_tok_offset + (global_pos + 1) * d];
+
+                    // Intra-chunk causal step
+                    for r in 0..r_singlets {
+                        let kr = k_tok[r];
+                        for c in 0..d {
+                            intra_acc[r * d + c] += kr * v_tok[c];
+                        }
+                    }
+
+                    let pos_norm = ((global_pos + 1) as f32).sqrt() * d_sqrt;
+                    for c in 0..d {
+                        let mut sum = 0.0f32;
+                        for r in 0..r_singlets {
+                            let qr = q_tok[r];
+                            let ctx_val = normed_context[r * d + c] + intra_acc[r * d + c];
+                            sum += qr * ctx_val;
+                        }
+                        out_tok[c] = sum / pos_norm;
+                    }
+                }
+
+                // Update running context with decay stabilizer across c_len steps
+                let mut updated_context = vec![0.0f32; r_singlets * d];
+                self.decay_stabilizer.apply(&running_context, &intra_acc, c_len, &mut updated_context);
+                running_context = updated_context;
+            }
+        }
+
+        out
+    }
+
+    /// Fused forward pass: g_local * Local_SDPA + g_global * Global_SingletAttention
+    /// Supports configurable/loadable gating weights (defaults to balanced [0.5, 0.5]).
     pub fn forward(
         &self,
         q_heads: &[f32],
@@ -136,11 +227,14 @@ impl HybridSingletAttention {
         n_tokens: usize,
     ) -> Vec<f32> {
         let local_out = self.local_window_attention(q_heads, k_heads, v_heads, n_tokens);
-        let global_out = self.singlet_attn.forward(q_heads, k_heads, v_heads, n_tokens, None);
+        let global_out = self.stabilized_global_attention(q_heads, k_heads, v_heads, n_tokens);
+
+        let g_local = self.gate[0];
+        let g_global = self.gate[1];
 
         let mut out = vec![0.0f32; local_out.len()];
         for i in 0..local_out.len() {
-            out[i] = 0.5 * local_out[i] + 0.5 * global_out[i];
+            out[i] = g_local * local_out[i] + g_global * global_out[i];
         }
         out
     }
@@ -168,5 +262,37 @@ mod tests {
         for &val in &out {
             assert!(!val.is_nan());
         }
+    }
+
+    #[test]
+    fn test_hybrid_fused_forward_and_gate_config() {
+        let embed_dim = 32;
+        let num_heads = 2;
+        let window_size = 8;
+        let n_tokens = 24;
+        let mut hybrid = HybridSingletAttention::new(embed_dim, num_heads, window_size, 4, 16, true);
+
+        let size = num_heads * n_tokens * (embed_dim / num_heads);
+        let q = vec![0.1f32; size];
+        let k = vec![0.1f32; size];
+        let v = vec![0.1f32; size];
+
+        let out_balanced = hybrid.forward(&q, &k, &v, n_tokens);
+        assert_eq!(out_balanced.len(), size);
+
+        // Configure gate to 100% local
+        hybrid.gate = [1.0, 0.0];
+        let out_local_only = hybrid.forward(&q, &k, &v, n_tokens);
+        let direct_local = hybrid.local_window_attention(&q, &k, &v, n_tokens);
+
+        for i in 0..size {
+            assert!((out_local_only[i] - direct_local[i]).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "chunk_size must be positive")]
+    fn test_hybrid_invalid_chunk_size_panics() {
+        let _ = HybridSingletAttention::new(32, 2, 8, 4, 0, true);
     }
 }
