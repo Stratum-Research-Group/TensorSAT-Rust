@@ -246,6 +246,38 @@ impl SingletAttention {
         }
 
         // 3. Parallel Prefill Forward
+        self.forward_with_projected_singlets(&q_s, &k_s, v_heads, n_tokens)
+    }
+
+    /// Computes full prefill attention forward pass directly from pre-projected singlet representations `q_s` and `k_s`.
+    ///
+    /// Input:
+    /// - `q_s`: shape (H, N, R)
+    /// - `k_s`: shape (H, N, R)
+    /// - `v_heads`: shape (H, N, d)
+    ///
+    /// Output: Out with shape (H, N, d).
+    ///
+    /// This enables directly piping outputs from `SoftmaxToSingletAdapter::forward` or other external
+    /// feature extractors into linear uncrossing attention layers.
+    pub fn forward_with_projected_singlets(
+        &self,
+        q_s: &[f32],
+        k_s: &[f32],
+        v_heads: &[f32],
+        n_tokens: usize,
+    ) -> Vec<f32> {
+        let h_heads = self.num_heads;
+        let d = self.head_dim;
+        let r_singlets = self.num_singlets;
+        let total_size = h_heads * n_tokens * d;
+        let singlet_size = h_heads * n_tokens * r_singlets;
+
+        assert_eq!(q_s.len(), singlet_size);
+        assert_eq!(k_s.len(), singlet_size);
+        assert_eq!(v_heads.len(), total_size);
+
+        let mut out = vec![0.0f32; total_size];
         let d_sqrt = (d as f32).sqrt();
 
         if !self.is_causal {

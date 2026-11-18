@@ -14,15 +14,28 @@ fn main() {
     let num_singlets = 16;
     let head_dim = embed_dim / num_heads;
 
+    // Check if large-scale sequences (131k .. 1M) should be benchmarked.
+    // By default, the benchmark runs up to 65,536 tokens. Set TENSORSAT_BENCH_LARGE=1
+    // or pass `--large` on the command line to benchmark up to 1,048,576 tokens (~8.6 GB RAM requirement).
+    let run_large = std::env::var("TENSORSAT_BENCH_LARGE").map(|v| v == "1" || v == "true").unwrap_or(false)
+        || std::env::args().any(|arg| arg == "--large" || arg == "-l");
+
+    let n_sizes: &[usize] = if run_large {
+        &[1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576]
+    } else {
+        &[1024, 2048, 4096, 8192, 16384, 32768, 65536]
+    };
+
     let layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 512, true);
 
     println!("\n1. Neural Sequence Scaling (Prefill Mode):");
+    if !run_large {
+        println!("   [Note: Running standard suite <= 65k tokens. Use `--large` or TENSORSAT_BENCH_LARGE=1 for 131k-1M rows]");
+    }
     println!("{:<15} | {:<20} | {:<18} | {:<15}", "Tokens (N)", "Latency (ms)", "Throughput (tok/s)", "Complexity");
     println!("-----------------------------------------------------------------------------");
 
-    for &n in &[
-        1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576,
-    ] {
+    for &n in n_sizes {
         let size = num_heads * n * head_dim;
         let q = vec![0.05f32; size];
         let k = vec![0.05f32; size];

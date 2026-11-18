@@ -167,4 +167,38 @@ mod tests {
             assert!(val > 0.0, "k_s must be strictly positive (prevented underflow)");
         }
     }
+
+    #[test]
+    fn test_adapter_piping_to_singlet_attention() {
+        use crate::attention::SingletAttention;
+
+        let embed_dim = 16;
+        let num_heads = 2;
+        let num_singlets = 4;
+        let head_dim = embed_dim / num_heads;
+        let n_tokens = 3;
+
+        let adapter = SoftmaxToSingletAdapter::new(embed_dim, num_heads, num_singlets);
+        let layer = SingletAttention::new(embed_dim, num_heads, num_singlets, 4, true);
+
+        let size = num_heads * n_tokens * head_dim;
+        let q = vec![0.25f32; size];
+        let k = vec![0.25f32; size];
+        let v = vec![0.5f32; size];
+
+        let mut q_s = vec![0.0f32; num_heads * n_tokens * num_singlets];
+        let mut k_s = vec![0.0f32; num_heads * n_tokens * num_singlets];
+
+        // 1. Project through adapter
+        adapter.forward(&q, &k, n_tokens, &mut q_s, &mut k_s);
+
+        // 2. Consume adapter features directly in downstream attention layer
+        let out = layer.forward_with_projected_singlets(&q_s, &k_s, &v, n_tokens);
+
+        assert_eq!(out.len(), size);
+        for &val in &out {
+            assert!(!val.is_nan());
+            assert!(val.is_finite());
+        }
+    }
 }

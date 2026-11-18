@@ -90,11 +90,11 @@ Executed with `cargo run --release --bin benchmark_tensorsat` on single-threaded
 ### 1. Hybrid Attention (`tensorsat::hybrid::HybridSingletAttention`)
 * Blends an exact causal local sliding window ($W = 128$) with the global $\mathcal{O}(N)$ singlet uncrossing accumulator via configurable gating (defaults to balanced [0.5, 0.5]):
 $$\text{Attention}(Q, K, V) = g_{\text{local}} \cdot \text{LocalSDPA}(Q, K, V) + g_{\text{global}} \cdot \text{SingletGlobal}(Q, K, V)$$
-* Global singlet state uses continuous leaky tracking (`DecayStabilizer`) and `StateRMSNorm` across chunks. Operates in sequence prefill mode. Inter-chunk normalization introduces bounded chunk-boundary sensitivity (~$10^{-3}$) in exchange for long-context state stability.
+* Global singlet state uses continuous leaky tracking (`DecayStabilizer`) and `StateRMSNorm` across chunks. Operates in sequence prefill mode. Inter-chunk normalization introduces bounded chunk-boundary sensitivity (observed ~10^-3 on tested configs, regression-pinned at $< 10^{-2}$) in exchange for long-context state stability.
 
 ### 2. Pre-Trained Weight Adapter (`tensorsat::adapter::SoftmaxToSingletAdapter`)
-* Maps Q/K representations into positive singlet features using positive kernel transduction ($\text{ELU}(x) + 1.0$) with configurable/loadable transduction weights `q_trans` and `k_trans`.
-* Projected positive features `q_s` and `k_s` can be supplied to downstream linear uncrossing attention layers.
+* Maps Q/K representations into positive singlet features using positive kernel transduction ($\text{ELU}(x) + 1.0$) with configurable/loadable transduction weights `q_trans` and `k_trans`. A small positive clamp floor ($10^{-12}$) prevents exact zero underflow for extreme negative projections ($x < \ln(10^{-12}) \approx -27.6$), guaranteeing strict positivity with bounded deviation.
+* Projected positive features `q_s` and `k_s` can be supplied to downstream linear uncrossing attention layers directly via `SingletAttention::forward_with_projected_singlets`.
 
 ### 3. Numerical Stabilizers (`tensorsat::stabilizer::DecayStabilizer`, `StateRMSNorm`)
 * Implements continuous leaky tracking $S_t = \gamma^C S_{t-1} + K_s^T V$, guaranteeing bounded spectral radius:
@@ -150,8 +150,12 @@ cargo build --release
 # Run unit and regression tests
 cargo test
 
-# Run full benchmark suite
+# Run standard benchmark suite (sequences up to 65k tokens)
 cargo run --release --bin benchmark_tensorsat
+
+# Run full benchmark suite up to 1M tokens (requires ~8.6 GB available RAM)
+cargo run --release --bin benchmark_tensorsat -- --large
+# or: TENSORSAT_BENCH_LARGE=1 cargo run --release --bin benchmark_tensorsat
 ```
 
 ---

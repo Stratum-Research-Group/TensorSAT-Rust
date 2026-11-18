@@ -137,8 +137,10 @@ impl HybridSingletAttention {
     ///
     /// Note on chunk-size sensitivity: In accordance with the hybrid stabilized attention design,
     /// inter-chunk context normalization (`StateRMSNorm`) and block decay (`DecayStabilizer`) operate
-    /// across chunk boundaries. Varying `chunk_size` produces minor numerical variance (typically ~10^-3)
-    /// while strictly bounding running state growth over arbitrary sequence lengths.
+    /// across chunk boundaries. Varying `chunk_size` produces minor numerical variance (empirically
+    /// observed ~10^-3 on tested configurations, with regression test tolerance pinned at < 1e-2)
+    /// while strictly bounding running state growth over arbitrary sequence lengths. This finite empirical
+    /// variance does not constitute a universal mathematical bound across all arbitrary input distributions.
     pub fn stabilized_global_attention(
         &self,
         q_heads: &[f32],
