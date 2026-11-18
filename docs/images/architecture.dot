@@ -1,0 +1,95 @@
+digraph TensorSATArchitecture {
+    graph [
+        rankdir=TB,
+        bgcolor="#0f172a",
+        pad="0.5",
+        nodesep="0.6",
+        ranksep="0.8",
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=16,
+        fontcolor="#f8fafc",
+        label="TensorSAT-Rust Architecture & Dataflow",
+        labelloc="t"
+    ];
+    node [
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=11,
+        style="filled,rounded",
+        shape=box,
+        color="#334155",
+        penwidth=1.5,
+        margin="0.25,0.15"
+    ];
+    edge [
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=9,
+        color="#94a3b8",
+        fontcolor="#94a3b8",
+        penwidth=1.5,
+        arrowsize=0.8
+    ];
+
+    // Subgraph 1: Inputs
+    subgraph cluster_inputs {
+        label = "Input Problem Domains";
+        fontcolor = "#38bdf8";
+        color = "#1e293b";
+        bgcolor = "#1e293b";
+        style = "rounded,filled";
+
+        cnf_in [label="DIMACS CNF Formula\n(.cnf)", fillcolor="#0369a1", fontcolor="#ffffff", shape=component];
+        tn_in [label="Discrete Planar Tensor Network\n(Contraction Tasks)", fillcolor="#0369a1", fontcolor="#ffffff", shape=component];
+        seq_in [label="Neural Sequence Embeddings\nQ, K, V (N × D)", fillcolor="#0369a1", fontcolor="#ffffff", shape=component];
+    }
+
+    // Subgraph 2: Core Processing Layers
+    subgraph cluster_core {
+        label = "TensorSAT Core Engine";
+        fontcolor = "#a855f7";
+        color = "#1e1b4b";
+        bgcolor = "#18182b";
+        style = "rounded,filled";
+
+        // CNF Branch
+        cnf_eng [label="CNF Streaming & Dilution\nsrc/cnf.rs\n• Strict & Permissive DIMACS\n• Pendant Dilution & Treewidth Decoupling\n• Sparse/Dense Clause Partitioning", fillcolor="#3b0764", fontcolor="#f3e8ff"];
+        
+        // Uncrossing & Scientific Contraction
+        uncross [label="Planar Uncrossing\nsrc/uncrossing.rs\n• Discrete Phase Algebra {-1, 0, 1}\n• Exhaustive 1-bit Identity Verification\n• Rank-Bounded Slices (≤ 12^λ)", fillcolor="#1e1b4b", fontcolor="#f3e8ff"];
+        scientific [label="Zero-Drift FP64 Contraction\nsrc/scientific.rs\n• Exact Discrete Tensor Contraction\n• Drift ≤ 10^-15 Machine Epsilon", fillcolor="#1e1b4b", fontcolor="#f3e8ff"];
+
+        // Neural Branch
+        adapter [label="Softmax-to-Singlet Adapter\nsrc/adapter.rs\n• Positive Singlet Map (ELU+1)\n• Safe Underflow Clamp (≥ 10^-12)\n• Transduction Weight Verification", fillcolor="#312e81", fontcolor="#e0e7ff"];
+        attn [label="Singlet Attention\nsrc/attention.rs\n• Causal / Non-Causal Singlets\n• O(N) Chunked Prefix Accumulator\n• O(1) Incremental SingletKVCache", fillcolor="#312e81", fontcolor="#e0e7ff"];
+        stabilizer [label="Sequence Stabilizers\nsrc/stabilizer.rs\n• StateRMSNorm (Unit Variance)\n• DecayStabilizer (0, 1]", fillcolor="#1e1b4b", fontcolor="#f3e8ff"];
+        hybrid [label="Hybrid Sequence Layer\nsrc/hybrid.rs\n• Local Sliding Window\n• Gated Branch Blending\n• Bounded Chunk Sensitivity", fillcolor="#4338ca", fontcolor="#ffffff", penwidth=2, color="#818cf8"];
+    }
+
+    // Subgraph 3: Outputs
+    subgraph cluster_outputs {
+        label = "Execution Targets & Outputs";
+        fontcolor = "#34d399";
+        color = "#064e3b";
+        bgcolor = "#062e24";
+        style = "rounded,filled";
+
+        sat_out [label="Linear-Time SAT / #SAT\nCounting & Partitioning", fillcolor="#047857", fontcolor="#ffffff", shape=box3d];
+        fp64_out [label="Exact Simulation Output\nPhysical & Quantum States", fillcolor="#047857", fontcolor="#ffffff", shape=box3d];
+        neural_out [label="Autoregressive Tokens\nO(N) Context Generation", fillcolor="#047857", fontcolor="#ffffff", shape=box3d];
+    }
+
+    // Connections
+    cnf_in -> cnf_eng [label="DIMACS tokens"];
+    cnf_eng -> uncross [label="Partitioned Clauses"];
+    uncross -> scientific [label="Uncrossed Planar Slices"];
+    scientific -> sat_out [label="Exact Clause Partition"];
+    
+    tn_in -> uncross [label="Tensor Slices"];
+    scientific -> fp64_out [label="Zero-Drift Invariant"];
+
+    seq_in -> adapter [label="Q, K Weights"];
+    seq_in -> hybrid [label="Token Projections"];
+    adapter -> attn [label="q_s, k_s singlets"];
+    attn -> hybrid [label="Global Attention State"];
+    stabilizer -> hybrid [label="Normalized States"];
+    hybrid -> neural_out [label="Step Output / Prefill Embeddings"];
+}

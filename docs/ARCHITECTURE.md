@@ -6,6 +6,8 @@ This document provides architectural diagrams, execution flowcharts, and compone
 
 ## 1. High-Level System Architecture
 
+![TensorSAT-Rust Architecture](images/architecture.png)
+
 TensorSAT decomposes SAT formulas, discrete tensor networks, and neural sequence representations into linear-complexity exact or bounded contractions.
 
 ```mermaid
