@@ -20,7 +20,7 @@ fn main() {
     println!("{:<15} | {:<20} | {:<15}", "Tokens (N)", "Latency (ms)", "Complexity");
     println!("--------------------------------------------------");
 
-    for &n in &[1024, 2048, 4096, 8192, 16384] {
+    for &n in &[1024, 2048, 4096, 8192, 16384, 32768, 65536] {
         let size = num_heads * n * head_dim;
         let q = vec![0.05f32; size];
         let k = vec![0.05f32; size];
@@ -30,7 +30,7 @@ fn main() {
         let _ = layer.forward(&q[..num_heads * 64 * head_dim], &k[..num_heads * 64 * head_dim], &v[..num_heads * 64 * head_dim], 64, None);
 
         let t0 = Instant::now();
-        let iters = if n >= 8192 { 3 } else { 10 };
+        let iters = if n >= 32768 { 2 } else if n >= 8192 { 4 } else { 10 };
         for _ in 0..iters {
             let _ = layer.forward(&q, &k, &v, n, None);
         }
