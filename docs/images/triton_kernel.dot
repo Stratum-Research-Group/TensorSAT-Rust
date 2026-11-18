@@ -1,0 +1,99 @@
+digraph TritonKernelArchitecture {
+    graph [
+        rankdir=TB,
+        bgcolor="#0b0f19",
+        pad="0.5",
+        nodesep="0.6",
+        ranksep="0.7",
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=16,
+        fontcolor="#f8fafc",
+        label="TensorSAT Triton Fused Singlet Kernel Architecture\n(GPU SRAM Tiling & IEEE-Precision GEMM)",
+        labelloc="t"
+    ];
+    node [
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=11,
+        style="filled,rounded",
+        shape=box,
+        color="#334155",
+        penwidth=1.5,
+        margin="0.25,0.15"
+    ];
+    edge [
+        fontname="Helvetica,Arial,sans-serif",
+        fontsize=9,
+        color="#94a3b8",
+        fontcolor="#94a3b8",
+        penwidth=1.5,
+        arrowsize=0.8
+    ];
+
+    // Global Memory Subgraph
+    subgraph cluster_gmem {
+        label = "High Bandwidth Memory (HBM / VRAM)";
+        fontcolor = "#38bdf8";
+        color = "#1e293b";
+        bgcolor = "#111827";
+        style = "rounded,filled";
+
+        tensor_q [label="Query Tensor Q\n(B, H, N, D)\nfp16 / bf16 / fp32", fillcolor="#0369a1", fontcolor="#ffffff", shape=box3d];
+        tensor_u [label="Singlet Basis Matrix U\n(H, D, R)\nfp16 / bf16 / fp32", fillcolor="#0369a1", fontcolor="#ffffff", shape=box3d];
+        tensor_out [label="Projected Singlets Out\n(B, H, N, R)\nQ_singlet = Q @ U", fillcolor="#047857", fontcolor="#ffffff", shape=box3d];
+    }
+
+    // Grid Scheduling
+    subgraph cluster_grid {
+        label = "Triton 2D Execution Grid & Thread Blocks";
+        fontcolor = "#f59e0b";
+        color = "#27272a";
+        bgcolor = "#18181b";
+        style = "rounded,filled";
+
+        grid_pid0 [label="Program ID 0 (pid_bh)\nBatch x Head Mapping\nb = pid_bh // H\nh = pid_bh % H", fillcolor="#78350f", fontcolor="#fef3c7"];
+        grid_pid1 [label="Program ID 1 (pid_tile)\n2D Spatial Tile Index\ntile_n = pid_tile // cdiv(R, BLOCK_R)\ntile_r = pid_tile % cdiv(R, BLOCK_R)", fillcolor="#78350f", fontcolor="#fef3c7"];
+    }
+
+    // On-Chip SRAM Processing Subgraph
+    subgraph cluster_sram {
+        label = "On-Chip SRAM / Tensor Core Execution (Per SM Block)";
+        fontcolor = "#c084fc";
+        color = "#3b0764";
+        bgcolor = "#1f1035";
+        style = "rounded,filled";
+
+        tile_alloc [label="Accumulator Allocation\nacc = zeros((BLOCK_N, BLOCK_R), dtype=fp32)\nTile: BLOCK_N=64, BLOCK_R=16", fillcolor="#4c1d95", fontcolor="#ede9fe"];
+        
+        subgraph cluster_kloop {
+            label = "Outer K-Reduction Loop (over D dimension by step BLOCK_D=32)";
+            fontcolor = "#e879f9";
+            color = "#581c87";
+            bgcolor = "#2e1065";
+            style = "rounded,filled";
+
+            load_q [label="Masked SRAM Tile Load: Q_tile\nShape: (BLOCK_N, BLOCK_D)\nMask: (offs_n < N) & (offs_d < D)", fillcolor="#6b21a8", fontcolor="#faf5ff"];
+            load_u [label="Masked SRAM Tile Load: U_tile\nShape: (BLOCK_D, BLOCK_R)\nMask: (offs_d < D) & (offs_r < R)", fillcolor="#6b21a8", fontcolor="#faf5ff"];
+            
+            mma [label="Fused Dot-Product (WGMMA / MMA)\ntl.dot(Q_tile, U_tile, input_precision='ieee')\nStrict IEEE 754 (No TF32 truncation)", fillcolor="#9333ea", fontcolor="#ffffff", penwidth=2, color="#d8b4fe"];
+            acc_update [label="In-Register Accumulation\nacc += dot_product\nKept in Registers across D iterations", fillcolor="#6b21a8", fontcolor="#faf5ff"];
+        }
+
+        store_out [label="Masked Output Writeback\ntl.store(out_ptrs, acc, mask=out_mask)\nConversion to Target Precision", fillcolor="#4c1d95", fontcolor="#ede9fe"];
+    }
+
+    // Edges
+    grid_pid0 -> tile_alloc [label="Assigns (b, h)"];
+    grid_pid1 -> tile_alloc [label="Assigns (tile_n, tile_r)"];
+
+    tensor_q -> load_q [label="Coalesced Global Load (stride_qn, stride_qd)"];
+    tensor_u -> load_u [label="Broadcast Global Load (stride_ud, stride_ur)"];
+
+    tile_alloc -> load_q [style=dashed, label="Initializes acc"];
+    load_q -> mma [label="Q tile in SRAM"];
+    load_u -> mma [label="U tile in SRAM"];
+    mma -> acc_update [label="fp32 partial sum"];
+    acc_update -> load_q [label="Next d_start (stride BLOCK_D)", color="#e879f9", style=dashed];
+    
+    acc_update -> store_out [label="Loop complete (D dimension exhausted)"];
+    store_out -> tensor_out [label="Coalesced Write to Global Memory"];
+}

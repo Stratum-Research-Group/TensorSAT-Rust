@@ -160,3 +160,17 @@ classDiagram
     HybridSequenceLayer *-- SingletAttention
     SingletAttention ..> SingletKVCache : reads and updates state
 ```
+
+
+---
+
+## 6. GPU Acceleration: Triton Fused Singlet Kernel
+
+The low-rank projection $Q_{\text{singlet}} = Q \times U$ ($B \times H \times N \times D \to B \times H \times N \times R$) is accelerated on NVIDIA/AMD GPUs using fused Triton kernels (`triton_singlet_proj`).
+
+![TensorSAT Triton Kernel Architecture](images/triton_kernel.png)
+
+### Key Features:
+- **2D Tiled Grid Mapping**: Thread blocks are dispatched across a 2D grid `(B * H, num_n_tiles * num_r_tiles)`.
+- **SRAM Staging**: Blocks iterate across dimension $D$ in slices of `BLOCK_D = 32`, holding accumulator tiles of size `BLOCK_N = 64` $\times$ `BLOCK_R = 16` directly in on-chip registers.
+- **Strict IEEE-Precision GEMM**: Uses `input_precision="ieee"` in `tl.dot` to avoid TF32 truncation artifacts, maintaining exact discrete low-rank properties.
